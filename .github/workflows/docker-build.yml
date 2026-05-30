@@ -41,7 +41,7 @@ jobs:
           cd frontend
           npm install
           npm run build
-          # 将打包生成的 dist 目录移动到后端的构建上下文中
+          rm -rf ../backend/dist
           mv dist ../backend/
 
       # 4. 配置 Go 并编译后端二进制文件
