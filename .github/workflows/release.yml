@@ -1,0 +1,63 @@
+name: Release Server Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        # 定义具体的编译矩阵组合
+        include:
+          - goos: linux
+            goarch: 386
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: riscv64
+          - goos: windows
+            goarch: 386
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+          # 若需要 macOS 版本可保留以下两行，不需要则删除
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21' # 请替换为 go.mod 中的实际版本
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          OUTPUT_NAME=float-server-${{ matrix.goos }}-${{ matrix.goarch }}
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            OUTPUT_NAME+='.exe'
+          fi
+          # 根据你的目录树，入口文件为 cmd/server/main.go
+          go build -trimpath -ldflags="-s -w" -o $OUTPUT_NAME ./cmd/server/main.go
+          
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: float-server-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,1 @@
+import{E as e,d as t,gt as n,t as r}from"./_plugin-vue_export-helper-DI2zxuo1.js";var i=r({__name:`StatusDot`,props:{isOnline:{type:Boolean,required:!0,default:!1}},setup(r){return(i,a)=>(e(),t(`div`,{class:n([`status-dot`,{online:r.isOnline}])},null,2))}},[[`__scopeId`,`data-v-e9e64ff4`]]);export{i as t};

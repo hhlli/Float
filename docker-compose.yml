@@ -1,0 +1,13 @@
+services:
+  float-server:
+    build: .
+    container_name: float-server
+    restart: always
+    environment:
+      # 配置容器时区
+      - TZ=Asia/Shanghai
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./data/logs:/app/logs
