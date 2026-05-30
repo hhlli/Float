@@ -22,4 +22,4 @@ RUN chmod +x /app/Float
 
 EXPOSE 8080
 
-CMD ["/app/Float"]
+CMD ["/app/Float", "serve"]
