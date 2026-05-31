@@ -8,7 +8,8 @@ param (
     [switch]$Insecure,
     [switch]$DisableRpc,
     [switch]$IncludeBuffer,
-    [switch]$EnableTerminal
+    [switch]$EnableTerminal,
+    [string]$Source = "github"
 )
 
 Write-Host "=========================================="
@@ -43,7 +44,11 @@ if ($IsAdmin) {
     $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
 }
 
-$ProbeUrl = "$Server/float-agent-windows-amd64.exe"
+if ($Source -eq "server") {
+    $ProbeUrl = "$Server/float-agent-windows-amd64.exe"
+} else {
+    $ProbeUrl = "https://github.com/hhlli/Float-agent/releases/latest/download/float-agent-windows-amd64.exe"
+}
 $BinPath = "$TargetInstallDir\float-agent.exe"
 
 Write-Host "📁 [3/5] 准备目录并下载文件..."

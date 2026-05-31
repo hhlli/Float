@@ -9,6 +9,7 @@ CUSTOM_INSTALL_DIR=""
 BIN_NAME="float-agent"
 SERVICE_NAME="com.float.agent"
 PROBE_ARGS=""
+DOWNLOAD_SOURCE="github"
 
 echo "=========================================="
 echo "🚀 开始安装 Float Agent MacOS 探针"
@@ -24,6 +25,7 @@ while [[ $# -gt 0 ]]; do
     --service-name) SERVICE_NAME="$2"; shift 2 ;;
     --insecure|--no-update|--include-buffer|--disable-rpc|--enable-terminal) PROBE_ARGS="$PROBE_ARGS $1"; shift 1 ;;
     --net-include|--net-exclude|--disk-mounts) PROBE_ARGS="$PROBE_ARGS $1 $2"; shift 2 ;;
+    --source) DOWNLOAD_SOURCE="$2"; shift 2 ;;
     *) shift 1 ;;
   esac
 done
@@ -63,7 +65,11 @@ BIN_ARCH="amd64"
 if [[ "$ARCH" == "arm64" ]]; then BIN_ARCH="arm64"; fi
 echo "🔍 [3/6] 检测到系统架构: $ARCH (对应探针版本: darwin-$BIN_ARCH)"
 
-PROBE_URL="${SERVER_URL}/float-agent-darwin-${BIN_ARCH}"
+if [ "$DOWNLOAD_SOURCE" == "server" ]; then
+    PROBE_URL="${SERVER_URL}/float-agent-darwin-${BIN_ARCH}"
+else
+    PROBE_URL="https://github.com/hhlli/Float-agent/releases/latest/download/float-agent-darwin-${BIN_ARCH}"
+fi
 BIN_PATH="${INSTALL_DIR}/${BIN_NAME}"
 
 echo "📁 [4/6] 准备安装目录并下载二进制文件..."

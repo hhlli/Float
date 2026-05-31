@@ -11,6 +11,7 @@ BIN_NAME="float-agent"
 PROBE_ARGS=""
 ENABLE_DOCKER="false"
 ENABLE_DOCKER_STATS="false"
+DOWNLOAD_SOURCE="github"
 
 echo "=========================================="
 echo "🚀 Starting Float Agent Linux Probe Installation"
@@ -29,6 +30,7 @@ while [[ $# -gt 0 ]]; do
     --docker-stats) ENABLE_DOCKER_STATS="true"; shift 1 ;;
     --insecure|--no-update|--include-buffer|--disable-rpc|--enable-terminal) PROBE_ARGS="$PROBE_ARGS $1"; shift 1 ;;
     --net-include|--net-exclude|--disk-mounts) PROBE_ARGS="$PROBE_ARGS $1 $2"; shift 2 ;;
+    --source) DOWNLOAD_SOURCE="$2"; shift 2 ;;
     *) echo "❌ [ERROR] Unknown parameter: $1"; exit 1 ;;
   esac
 done
@@ -74,7 +76,13 @@ case $ARCH in
 esac
 
 BIN_PATH="${INSTALL_DIR}/${BIN_NAME}"
-PROBE_URL="${SERVER_URL}/float-agent-linux-${BIN_ARCH}"
+
+if [ "$DOWNLOAD_SOURCE" == "server" ]; then
+    PROBE_URL="${SERVER_URL}/float-agent-linux-${BIN_ARCH}"
+else
+    PROBE_URL="https://github.com/hhlli/Float-agent/releases/latest/download/float-agent-linux-${BIN_ARCH}"
+fi
+
 if [ -n "$GH_PROXY" ]; then
   [[ "${GH_PROXY}" != */ ]] && GH_PROXY="${GH_PROXY}/"
   PROBE_URL="${GH_PROXY}${PROBE_URL}"
