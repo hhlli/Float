@@ -12,4 +12,4 @@ logs/
 /float-agent-linux-amd64
 
 # 忽略 MacOS 系统文件
-**/.DS_Store
+**/.DS_Store.DS_Store
