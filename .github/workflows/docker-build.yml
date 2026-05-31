@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch: # 新增的手动触发器
 
 env:
   REGISTRY: ghcr.io
