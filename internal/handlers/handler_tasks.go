@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-	"net"       // 🌟 新增
     "regexp"
 
 	"Float/internal/database"
@@ -15,13 +14,9 @@ import (
 
 // 🌟 新增：校验目标是否为合法的 IP 或纯净的域名
 func isValidTarget(target string) bool {
-    // 1. 测试是否为合法的 IPv4 或 IPv6
-    if ip := net.ParseIP(target); ip != nil {
-        return true
-    }
-    // 2. 测试是否为纯净的域名格式（仅允许字母、数字、中划线和点号）
-    // 此正则严格阻断了空格以及所有能引起 Shell 命令逃逸的特殊符号
-    matched, _ := regexp.MatchString(`^[a-zA-Z0-9.-]+$`, target)
+    // 允许字母、数字、中划线、点号和冒号（支持端口和IPv6简写形式）
+    // 此正则仍能阻断空格及可能引起 Shell 命令逃逸的特殊符号
+    matched, _ := regexp.MatchString(`^[a-zA-Z0-9.:-]+$`, target)
     return matched
 }
 
