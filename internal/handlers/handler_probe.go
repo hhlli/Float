@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 	"strings"
+	"sort"
 
 	"Float/internal/core"     // 引入 core 包
 	"Float/internal/database" // 引入 database 包
@@ -499,4 +500,125 @@ func ApiPingDataHandler(w http.ResponseWriter, r *http.Request) {
 
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(results)
+}
+
+// --- 辅助函数：计算中位数 P50 ---
+func getMedianP50(arr []float64) float64 {
+	if len(arr) == 0 {
+		return 0
+	}
+	sort.Float64s(arr)
+	mid := len(arr) / 2
+	if len(arr)%2 != 0 {
+		return arr[mid]
+	}
+	return (arr[mid-1] + arr[mid]) / 2.0
+}
+
+// --- 辅助函数：生成样式状态 ---
+func getLatencyStatus(ping float64) (string, string, string) {
+	if ping <= 0 {
+		return "超时", "#64748b", "#f1f5f9"
+	}
+	if ping <= 80 {
+		return "优秀", "#059669", "#dcfce7"
+	}
+	if ping <= 200 {
+		return "一般", "#d97706", "#fef3c7"
+	}
+	return "较差", "#dc2626", "#fee2e2"
+}
+
+// [API] 为前端概览面板专供的轻量化三网延迟摘要
+func ApiPingSummaryHandler(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.URL.Query().Get("node_id")
+	if nodeID == "" {
+		http.Error(w, "Missing node_id", http.StatusBadRequest)
+		return
+	}
+
+	// 取过去 120 秒的数据，切分出 10 个数据点
+	startTime := time.Now().Unix() - 120
+	// 直接使用 network_type 字段进行查询与过滤，彻底摆脱字符串匹配
+	query := `
+    SELECT t.network_type, r.ping_ms, (r.timestamp / 5) * 5 AS bucket_time
+    FROM task_results r
+    JOIN monitor_tasks t ON r.task_id = t.id
+    WHERE r.node_id = ? AND r.timestamp >= ? AND t.network_type IN ('电信', '联通', '移动')
+    ORDER BY bucket_time ASC`
+
+	rows, err := database.DB.Query(query, nodeID, startTime)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type Bucket map[string][]float64
+	timeline := make(map[int64]Bucket)
+	var bucketOrder []int64
+
+	for rows.Next() {
+		var netName string
+		var ping float64
+		var bTime int64
+		rows.Scan(&netName, &ping, &bTime)
+
+		if timeline[bTime] == nil {
+			timeline[bTime] = make(Bucket)
+			bucketOrder = append(bucketOrder, bTime)
+		}
+		if ping > 0 {
+			timeline[bTime][netName] = append(timeline[bTime][netName], ping)
+		}
+	}
+
+	type Summary struct {
+		Name       string    `json:"name"`
+		Ping       string    `json:"ping"`
+		Count      int       `json:"count"`
+		History    []float64 `json:"history"`
+		StatusText string    `json:"statusText"`
+		Color      string    `json:"color"`
+		BgColor    string    `json:"bgColor"`
+	}
+
+	var results []Summary
+	for _, netName := range []string{"电信", "联通", "移动"} {
+		var history []float64
+		for _, bTime := range bucketOrder {
+			pings := timeline[bTime][netName]
+			history = append(history, getMedianP50(pings))
+		}
+
+		// 截取最新 10 条
+		if len(history) > 10 {
+			history = history[len(history)-10:]
+		}
+
+		currentPing := 0.0
+		if len(history) > 0 {
+			currentPing = history[len(history)-1]
+		}
+
+		st, col, bg := getLatencyStatus(currentPing)
+		
+		// 查询该类别的测速节点数量
+		countQuery := `SELECT COUNT(id) FROM monitor_tasks WHERE network_type = ?`
+		var netCount int
+		database.DB.QueryRow(countQuery, netName).Scan(&netCount)
+
+		results = append(results, Summary{
+			Name:       netName,
+			Ping:       fmt.Sprintf("%.1f", currentPing),
+			Count:      netCount,
+			History:    history,
+			StatusText: st,
+			Color:      col,
+			BgColor:    bg,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
 }

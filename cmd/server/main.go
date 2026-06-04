@@ -130,6 +130,8 @@ func migrate() {
 		`ALTER TABLE task_results ADD COLUMN jitter REAL DEFAULT 0;`,
 		`CREATE INDEX IF NOT EXISTS idx_task_results_node_time ON task_results(node_id, timestamp);`,
 		`CREATE INDEX IF NOT EXISTS idx_task_results_task_id ON task_results(task_id);`,
+		`ALTER TABLE monitor_tasks ADD COLUMN network_type TEXT DEFAULT '其他';`,
+		`CREATE INDEX IF NOT EXISTS idx_monitor_tasks_network ON monitor_tasks(network_type);`,
 	}
 
 	for _, q := range queries {
@@ -238,6 +240,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	http.HandleFunc("/api/public/servers/geo", withLogging(handlers.ApiGeoNodesHandler)) 
 	http.HandleFunc("/api/data", withLogging(handlers.ApiDataHandler))
 	http.HandleFunc("/api/data/ping", withLogging(handlers.ApiPingDataHandler))
+	http.HandleFunc("/api/data/ping/summary", withLogging(handlers.ApiPingSummaryHandler)) // 🌟 新增这一行
 	http.HandleFunc("/api/report", withLogging(handlers.ApiReceiveHandler))
     http.HandleFunc("/agent/register", withLogging(handlers.ApiRegisterHandler))
 	http.HandleFunc("/api/tasks/pull", withLogging(handlers.ApiPullTasksHandler))

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
     "regexp"
+	"strings"
 
 	"Float/internal/database"
 	"Float/internal/logger"
@@ -18,6 +19,21 @@ func isValidTarget(target string) bool {
     // 此正则仍能阻断空格及可能引起 Shell 命令逃逸的特殊符号
     matched, _ := regexp.MatchString(`^[a-zA-Z0-9.:-]+$`, target)
     return matched
+}
+
+// 🌟 新增：根据目标地址自动分类网络类型
+func classifyNetwork(target string) string {
+	targetLower := strings.ToLower(target)
+	if strings.Contains(targetLower, "-ct-") || strings.Contains(targetLower, "telecom") || strings.Contains(targetLower, "chinanet") {
+		return "电信"
+	}
+	if strings.Contains(targetLower, "-cu-") || strings.Contains(targetLower, "unicom") || strings.Contains(targetLower, "10010") {
+		return "联通"
+	}
+	if strings.Contains(targetLower, "-cm-") || strings.Contains(targetLower, "mobile") || strings.Contains(targetLower, "10086") {
+		return "移动"
+	}
+	return "其他"
 }
 
 // [API] 获取所有监测任务列表
@@ -91,8 +107,9 @@ func ApiAddTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	excludedJSON, _ := json.Marshal(req.ExcludedNodes)
 
-	_, err := database.DB.Exec("INSERT INTO monitor_tasks (name, type, excluded_nodes, target, interval, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		req.Name, req.Type, string(excludedJSON), req.Target, req.Interval, time.Now().Unix())
+	networkType := classifyNetwork(req.Target) // 🌟 获取分类
+	_, err := database.DB.Exec("INSERT INTO monitor_tasks (name, type, excluded_nodes, target, interval, network_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		req.Name, req.Type, string(excludedJSON), req.Target, req.Interval, networkType, time.Now().Unix()) // 🌟 更新 SQL 和参数
 
 		if err != nil {
 			logger.Log.Error("添加监测任务失败",
@@ -283,8 +300,9 @@ func ApiEditTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	excludedJSON, _ := json.Marshal(req.ExcludedNodes)
 
-	query := `UPDATE monitor_tasks SET name=?, type=?, target=?, excluded_nodes=?, interval=? WHERE id=?`
-	_, err := database.DB.Exec(query, req.Name, req.Type, req.Target, string(excludedJSON), req.Interval, req.ID)
+	networkType := classifyNetwork(req.Target) // 🌟 获取分类
+	query := `UPDATE monitor_tasks SET name=?, type=?, target=?, excluded_nodes=?, interval=?, network_type=? WHERE id=?`
+	_, err := database.DB.Exec(query, req.Name, req.Type, req.Target, string(excludedJSON), req.Interval, networkType, req.ID) // 🌟 更新 SQL 和参数
 	if err != nil {
 		logger.Log.Error("Update task error",
 			zap.String("module", "DB"),
