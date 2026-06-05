@@ -103,8 +103,6 @@ func getOfflineRules() map[string]bool {
 
 // ── 告警引擎主循环 ────────────────────────────────────────────────────────────
 
-// ── 告警引擎主循环 ────────────────────────────────────────────────────────────
-
 func StartAlertEngine() {
 	ticker := time.NewTicker(1 * time.Minute)
 	cooldown := make(map[string]int64)
@@ -113,9 +111,15 @@ func StartAlertEngine() {
 		for range ticker.C {
 			now := time.Now().Unix()
 			
+			// 👇 新增：每分钟将当前在线的节点，在 daily_stats 中的当日在线分钟数 +1
+			database.DB.Exec(`
+				INSERT INTO daily_stats (node_id, date, online_mins)
+				SELECT node_id, date('now', 'localtime'), 1 FROM servers WHERE status = 'online'
+				ON CONFLICT(node_id, date) DO UPDATE SET online_mins = daily_stats.online_mins + 1
+			`)
+			
 			// 👇 新增：在检测离线前，先检测是否有机器恢复上线
 			checkRecoveryAlerts(now, cooldown) 
-			
 			checkOfflineAlerts(now, cooldown)
 			checkLoadAlerts(now, cooldown)
 			checkTrafficAlerts(now, cooldown)

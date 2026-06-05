@@ -45,6 +45,7 @@ type PublicStaticServerNode struct {
 	SLA24H           string          `json:"sla_24h"`
 	History24H       []HourlyStatus  `json:"history_24h"`
 	LastActive       int64           `json:"last_active"` // 供状态计算逻辑使用
+	CreatedAt        int64           `json:"created_at"` // 👇 追加此行
 }
 
 // 动态实时指标结构体
@@ -77,7 +78,7 @@ type PublicRealtimeServerNode struct {
 func ApiPublicStaticServersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := database.DB.Query(`
         SELECT node_id, name, region, cost, currency, billing_cycle, billing_date, monthly_bw, bw_reset_day, notes, 
-               os, kernel, arch, virt, cpu_model, agent_version, docker_containers, last_active 
+               os, kernel, arch, virt, cpu_model, agent_version, docker_containers, last_active, created_at 
         FROM servers WHERE is_hidden = 0
     `)
 	if err != nil {
@@ -93,12 +94,12 @@ func ApiPublicStaticServersHandler(w http.ResponseWriter, r *http.Request) {
 		var region, currency, billingCycle, billingDate, notes, os, kernel, arch, virt, cpuModel, agentVersion sql.NullString
 		var cost, monthlyBW sql.NullFloat64
 		var bwResetDay sql.NullInt32
-		var lastActive sql.NullInt64
+		var lastActive, createdAt sql.NullInt64
 		var dockerContainers sql.NullString
 
 		err := rows.Scan(
 			&s.NodeID, &s.Name, &region, &cost, &currency, &billingCycle, &billingDate, &monthlyBW, &bwResetDay, &notes,
-			&os, &kernel, &arch, &virt, &cpuModel, &agentVersion, &dockerContainers, &lastActive,
+			&os, &kernel, &arch, &virt, &cpuModel, &agentVersion, &dockerContainers, &lastActive, &createdAt,
 		)
 		if err != nil {
 			logger.Log.Error("Row scan error", 
@@ -126,6 +127,7 @@ func ApiPublicStaticServersHandler(w http.ResponseWriter, r *http.Request) {
 		s.CPUModel = cpuModel.String
 		s.AgentVersion = agentVersion.String
 		s.LastActive = lastActive.Int64
+		s.CreatedAt = createdAt.Int64
 
 		if dockerContainers.Valid && dockerContainers.String != "" {
 			s.DockerContainers = json.RawMessage(dockerContainers.String)
@@ -167,27 +169,49 @@ func ApiPublicStaticServersHandler(w http.ResponseWriter, r *http.Request) {
 
 		// 30天历史状态计算
 		hist := make([]DailyStatus, 0, 30)
-		onlineCount := 0
+		totalOnlineMins := 0
+		
 		for _, meta := range last30Days {
 			status := "nodata"
-			if nodeHistMap != nil && nodeHistMap[meta.DateStr] {
-				status = "online"
-				onlineCount++
-			} else {
-				if meta.IsToday && (nowUnix-srv.LastActive < 180) {
-					status = "online"
-					onlineCount++
+			if nodeHistMap != nil {
+				if mins, exists := nodeHistMap[meta.DateStr]; exists {
+					totalOnlineMins += mins
+					if mins >= 1425 { // 一天容许15分钟内的网络波动，判定为全绿
+						status = "online"
+					} else if mins > 0 {
+						status = "warning"
+					}
 				} else if srv.LastActive > 0 && meta.TargetUnix < nowUnix {
 					status = "offline"
 				}
+			} else if srv.LastActive > 0 && meta.TargetUnix < nowUnix {
+				status = "offline"
+			}
+			
+			// 补充当天实时在线判定防误差
+			if meta.IsToday && (nowUnix-srv.LastActive < 180) && status != "online" {
+			    status = "online"
 			}
 			hist = append(hist, DailyStatus{Date: meta.DateStr, Status: status})
 		}
 		srv.History = hist
 
+		// SLA 严谨比例计算
+		daysAlive := (nowUnix - srv.CreatedAt) / 86400
+		if daysAlive < 1 {
+			daysAlive = 1
+		}
+		if daysAlive > 30 {
+			daysAlive = 30
+		}
+
+		totalExpectedMins := float64(daysAlive * 1440)
 		sla := 100.00
-		if srv.LastActive > 0 {
-			sla = (float64(onlineCount) / 30.0) * 100
+		if srv.LastActive > 0 && totalExpectedMins > 0 {
+			sla = (float64(totalOnlineMins) / totalExpectedMins) * 100
+			if sla > 100 {
+				sla = 100.00
+			}
 		}
 		srv.SLA = fmt.Sprintf("%.2f", sla)
 

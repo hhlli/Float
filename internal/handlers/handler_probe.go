@@ -529,7 +529,7 @@ func getLatencyStatus(ping float64) (string, string, string) {
 	return "较差", "#dc2626", "#fee2e2"
 }
 
-// [API] 为前端概览面板专供的轻量化三网延迟摘要
+// [API] 为前端概览面板专供的轻量化三网延迟摘要 (动态间隔自适应版)
 func ApiPingSummaryHandler(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.URL.Query().Get("node_id")
 	if nodeID == "" {
@@ -537,40 +537,45 @@ func ApiPingSummaryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 取过去 120 秒的数据，切分出 10 个数据点
-	startTime := time.Now().Unix() - 120
-	// 直接使用 network_type 字段进行查询与过滤，彻底摆脱字符串匹配
+	// 核心逻辑：使用 ROW_NUMBER 窗口函数，按 task_id 分组，提取每个任务最近的 10 条记录。
+	// rn = 1 代表最新的一次执行，rn = 10 代表第 10 新的执行。
 	query := `
-    SELECT t.network_type, r.ping_ms, (r.timestamp / 5) * 5 AS bucket_time
-    FROM task_results r
-    JOIN monitor_tasks t ON r.task_id = t.id
-    WHERE r.node_id = ? AND r.timestamp >= ? AND t.network_type IN ('电信', '联通', '移动')
-    ORDER BY bucket_time ASC`
+	WITH RankedResults AS (
+		SELECT 
+			t.network_type, 
+			r.ping_ms,
+			ROW_NUMBER() OVER (PARTITION BY t.id ORDER BY r.timestamp DESC) as rn
+		FROM task_results r
+		JOIN monitor_tasks t ON r.task_id = t.id
+		WHERE r.node_id = ? AND t.network_type IN ('电信', '联通', '移动')
+	)
+	SELECT network_type, ping_ms, rn
+	FROM RankedResults
+	WHERE rn <= 10
+	ORDER BY rn DESC` // ORDER BY rn DESC 确保后端读取顺序从旧到新
 
-	rows, err := database.DB.Query(query, nodeID, startTime)
+	rows, err := database.DB.Query(query, nodeID)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
+	// 数据结构：timeline[次序深度][网络类型] = []延迟列表
 	type Bucket map[string][]float64
-	timeline := make(map[int64]Bucket)
-	var bucketOrder []int64
+	timeline := make(map[int]Bucket)
 
 	for rows.Next() {
 		var netName string
 		var ping float64
-		var bTime int64
-		rows.Scan(&netName, &ping, &bTime)
+		var rn int
+		rows.Scan(&netName, &ping, &rn)
 
-		if timeline[bTime] == nil {
-			timeline[bTime] = make(Bucket)
-			bucketOrder = append(bucketOrder, bTime)
+		if timeline[rn] == nil {
+			timeline[rn] = make(Bucket)
 		}
-		if ping > 0 {
-			timeline[bTime][netName] = append(timeline[bTime][netName], ping)
-		}
+		// 不论是否超时（包括 0），全部计入切片，以准确反映当前次序的真实断流率
+		timeline[rn][netName] = append(timeline[rn][netName], ping)
 	}
 
 	type Summary struct {
@@ -586,14 +591,12 @@ func ApiPingSummaryHandler(w http.ResponseWriter, r *http.Request) {
 	var results []Summary
 	for _, netName := range []string{"电信", "联通", "移动"} {
 		var history []float64
-		for _, bTime := range bucketOrder {
-			pings := timeline[bTime][netName]
-			history = append(history, getMedianP50(pings))
-		}
 
-		// 截取最新 10 条
-		if len(history) > 10 {
-			history = history[len(history)-10:]
+		// 倒序遍历 rn (10 到 1)，确保推入 history 数组时，尾部始终为最新数据
+		for i := 10; i >= 1; i-- {
+			if pings, exists := timeline[i][netName]; exists && len(pings) > 0 {
+				history = append(history, getMedianP50(pings))
+			}
 		}
 
 		currentPing := 0.0
@@ -603,7 +606,7 @@ func ApiPingSummaryHandler(w http.ResponseWriter, r *http.Request) {
 
 		st, col, bg := getLatencyStatus(currentPing)
 		
-		// 查询该类别的测速节点数量
+		// 查询该类别的测速节点基数
 		countQuery := `SELECT COUNT(id) FROM monitor_tasks WHERE network_type = ?`
 		var netCount int
 		database.DB.QueryRow(countQuery, netName).Scan(&netCount)

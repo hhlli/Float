@@ -15,7 +15,7 @@ import (
 const ServerVersion = "v1.0.1"
 // ── 全局内存缓存 (用于 SLA 和历史状态) ──────────────────────────
 var (
-	HeatmapCacheMap    map[string]map[string]bool
+	HeatmapCacheMap    map[string]map[string]int
 	ActiveMinsCacheMap map[string]int
 	HourlyCacheMap     map[string]map[string]int
 	CacheMutex         sync.RWMutex
@@ -131,6 +131,10 @@ func InitDB() {
 	// 新增经纬度
 	DB.Exec(`ALTER TABLE servers ADD COLUMN latitude REAL DEFAULT 0;`)
     DB.Exec(`ALTER TABLE servers ADD COLUMN longitude REAL DEFAULT 0;`)
+	// 新增 30 天聚合状态表
+	DB.Exec(`CREATE TABLE IF NOT EXISTS daily_stats (
+		node_id TEXT, date TEXT, online_mins INTEGER DEFAULT 1, PRIMARY KEY(node_id, date)
+	);`)
 
 	// 生成默认密码哈希
 	defaultHash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
@@ -232,23 +236,23 @@ func StartSLACalculator() {
 }
 
 func calculateSLA() {
-	// 1. 30天历史查询 (🌟 去掉 database. 前缀)
+	// 1. 30天历史查询 (指向每日聚合表)
 	rowsHistory, err := DB.Query(`
-		SELECT node_id, strftime('%m-%d', timestamp, 'unixepoch', 'localtime') as log_date
-		FROM metrics
-		WHERE timestamp >= strftime('%s', 'now', '-30 days')
-		GROUP BY node_id, log_date
+		SELECT node_id, strftime('%m-%d', date) as log_date, online_mins
+		FROM daily_stats
+		WHERE date >= date('now', 'localtime', '-30 days')
 	`)
-	newMap := make(map[string]map[string]bool)
+	newMap := make(map[string]map[string]int)
 	if err == nil {
 		defer rowsHistory.Close()
 		for rowsHistory.Next() {
 			var nID, lDate string
-			if err := rowsHistory.Scan(&nID, &lDate); err == nil {
+			var mins int
+			if err := rowsHistory.Scan(&nID, &lDate, &mins); err == nil {
 				if newMap[nID] == nil {
-					newMap[nID] = make(map[string]bool)
+					newMap[nID] = make(map[string]int)
 				}
-				newMap[nID][lDate] = true
+				newMap[nID][lDate] = mins
 			}
 		}
 	}
