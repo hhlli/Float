@@ -10,6 +10,11 @@ import (
 	"strings"
 	"net"       // 新增
     "net/url"   // 新增
+	"os"            // 新增
+	"os/exec"       // 新增
+	"path/filepath" // 新增
+	"archive/zip"   // 新增
+	"io"            // 新增
 
 	"Float/internal/core"     // 新增这行
 	"Float/internal/database"
@@ -408,4 +413,195 @@ func ApiUpdateThemeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"message": "主题切换成功"}`))
+}
+
+type InstallThemeReq struct {
+	URL string `json:"url"`
+}
+
+// ApiInstallGithubThemeHandler 从 GitHub 拉取主题到 themes 目录
+func ApiInstallGithubThemeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req InstallThemeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.URL == "" || !strings.HasPrefix(req.URL, "https://github.com/") {
+		http.Error(w, `{"message": "仅支持合法的 GitHub HTTPS 链接"}`, http.StatusBadRequest)
+		return
+	}
+
+	parts := strings.Split(strings.TrimSuffix(req.URL, ".git"), "/")
+	if len(parts) < 2 {
+		http.Error(w, `{"message": "解析 GitHub URL 失败"}`, http.StatusBadRequest)
+		return
+	}
+	repoName := parts[len(parts)-1]
+
+	targetDir := filepath.Join("data", "themes", repoName)
+	
+	// 确保父目录存在并清理旧的同名主题残余
+	os.MkdirAll(filepath.Join("data", "themes"), os.ModePerm)
+	os.RemoveAll(targetDir)
+
+	cmd := exec.Command("git", "clone", "--depth", "1", req.URL, targetDir)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		database.InsertLog("ERROR", fmt.Sprintf("拉取主题失败: %s, %s", req.URL, stderr.String()))
+		http.Error(w, fmt.Sprintf(`{"message": "Git 克隆失败: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	os.RemoveAll(filepath.Join(targetDir, ".git"))
+	database.InsertLog("INFO", fmt.Sprintf("管理员从 GitHub 成功拉取新主题: %s", repoName))
+	
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status": "success", "message": "主题拉取成功"}`))
+}
+
+// ApiGetLocalThemesHandler 获取已安装的主题列表
+func ApiGetLocalThemesHandler(w http.ResponseWriter, r *http.Request) {
+	themesDir := filepath.Join("data", "themes")
+	entries, err := os.ReadDir(themesDir)
+	
+	themes := []map[string]string{}
+	if err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				configPath := filepath.Join(themesDir, entry.Name(), "theme.json")
+				configData, err := os.ReadFile(configPath)
+				themeInfo := map[string]string{
+					"id": entry.Name(),
+					"name": entry.Name(),
+				}
+				if err == nil {
+					var parsed map[string]interface{}
+					if json.Unmarshal(configData, &parsed) == nil {
+						if name, ok := parsed["name"].(string); ok { themeInfo["name"] = name }
+						if version, ok := parsed["version"].(string); ok { themeInfo["version"] = version }
+						if author, ok := parsed["author"].(string); ok { themeInfo["author"] = author }
+						if desc, ok := parsed["description"].(string); ok { themeInfo["description"] = desc }
+					}
+				}
+				themes = append(themes, themeInfo)
+			}
+		}
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(themes)
+}
+
+// ApiUploadZipThemeHandler 处理 ZIP 主题上传与解压
+func ApiUploadZipThemeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 限制上传大小为 50MB
+	r.ParseMultipartForm(50 << 20)
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "获取上传文件失败", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	if !strings.HasSuffix(strings.ToLower(header.Filename), ".zip") {
+		http.Error(w, "仅支持 .zip 格式的主题包", http.StatusBadRequest)
+		return
+	}
+
+	// 提取不带后缀的文件名作为主题目录名
+	themeName := strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
+	targetDir := filepath.Join("data", "themes", themeName)
+
+	// 保存为临时文件
+	tempZipPath := filepath.Join(os.TempDir(), header.Filename)
+	tempFile, err := os.Create(tempZipPath)
+	if err != nil {
+		http.Error(w, "创建临时文件失败", http.StatusInternalServerError)
+		return
+	}
+	io.Copy(tempFile, file)
+	tempFile.Close()
+	defer os.Remove(tempZipPath) // 执行完毕后自动清理临时压缩包
+
+	// 清理旧的同名主题目录并创建新目录
+	os.RemoveAll(targetDir)
+	os.MkdirAll(targetDir, os.ModePerm)
+
+	zipReader, err := zip.OpenReader(tempZipPath)
+	if err != nil {
+		http.Error(w, "读取 ZIP 压缩包失败", http.StatusInternalServerError)
+		return
+	}
+	defer zipReader.Close()
+
+	// 智能判断：如果 ZIP 内部全部被包裹在一个顶层文件夹下（例如 GitHub 默认的 repo-main），则剥离该层级
+	var topLevelDir string
+	hasSingleTopLevel := true
+	for i, f := range zipReader.File {
+		if strings.HasPrefix(f.Name, "__MACOSX") { continue }
+		parts := strings.Split(strings.Trim(f.Name, "/"), "/")
+		if i == 0 {
+			topLevelDir = parts[0]
+		} else if len(parts) > 0 && parts[0] != topLevelDir {
+			hasSingleTopLevel = false
+			break
+		}
+	}
+
+	for _, f := range zipReader.File {
+		// 忽略 macOS 的缓存文件
+		if strings.HasPrefix(f.Name, "__MACOSX") { continue }
+
+		relPath := f.Name
+		if hasSingleTopLevel && strings.HasPrefix(relPath, topLevelDir+"/") {
+			relPath = strings.TrimPrefix(relPath, topLevelDir+"/")
+		}
+		if relPath == "" || relPath == topLevelDir { continue }
+
+		fpath := filepath.Join(targetDir, relPath)
+
+		// 防御 Zip Slip 目录穿越漏洞
+		if !strings.HasPrefix(fpath, filepath.Clean(targetDir)+string(os.PathSeparator)) {
+			continue
+		}
+
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(fpath, os.ModePerm)
+			continue
+		}
+
+		if err = os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil { continue }
+
+		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		if err != nil { continue }
+
+		rc, err := f.Open()
+		if err != nil {
+			outFile.Close()
+			continue
+		}
+
+		io.Copy(outFile, rc)
+		outFile.Close()
+		rc.Close()
+	}
+
+	database.InsertLog("INFO", fmt.Sprintf("管理员通过 ZIP 上传安装了新主题: %s", themeName))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status": "success", "message": "ZIP 主题解压并安装成功"}`))
 }

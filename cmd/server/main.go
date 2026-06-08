@@ -169,28 +169,6 @@ func clearExpiredSessions() {
     database.DB.Exec("DELETE FROM sessions WHERE created_at < ?", expirationLimit)
 }
 
-type spaHandler struct {
-	staticPath string
-	indexPath  string
-}
-
-func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := filepath.Clean(r.URL.Path)
-	path = filepath.Join(h.staticPath, path)
-
-	fi, err := os.Stat(path)
-	if os.IsNotExist(err) || fi.IsDir() {
-		http.ServeFile(w, r, filepath.Join(h.staticPath, h.indexPath))
-		return
-	}
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	http.ServeFile(w, r, path)
-}
 
 // 🌟 新增：提取原先的 main 核心逻辑为 runServer 函数
 func runServer(cmd *cobra.Command, args []string) {
@@ -208,6 +186,8 @@ func runServer(cmd *cobra.Command, args []string) {
 	database.StartSLACalculator()
 	core.StartDataRetentionTask()
 	core.StartAlertEngine()
+	core.StartVersionCheckTask() // 新增此行
+	
 
 	// 1. 需要鉴权的管理 API
 	http.HandleFunc("/api/admin/servers/static", withLogging(authMiddleware(handlers.ApiStaticNodesHandler)))
@@ -270,10 +250,55 @@ func runServer(cmd *cobra.Command, args []string) {
 	http.HandleFunc("/float-agent-windows-amd64.exe", serveFile("./float-agent-windows-amd64.exe", "application/octet-stream"))
 	http.HandleFunc("/float-agent-darwin-amd64", serveFile("./float-agent-darwin-amd64", "application/octet-stream"))
 	http.HandleFunc("/float-agent-darwin-arm64", serveFile("./float-agent-darwin-arm64", "application/octet-stream"))
+	http.HandleFunc("/api/admin/settings/theme/install", withLogging(authMiddleware(handlers.ApiInstallGithubThemeHandler)))
+	http.HandleFunc("/api/admin/settings/theme/upload", withLogging(authMiddleware(handlers.ApiUploadZipThemeHandler)))
+	http.HandleFunc("/api/admin/settings/theme/list", withLogging(authMiddleware(handlers.ApiGetLocalThemesHandler)))
 
-	// 5. 静态前端资源处理
-	spa := spaHandler{staticPath: "dist", indexPath: "index.html"}
-	http.Handle("/", spa)
+	// 5. 静态前端资源处理与动态主题分发
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		path := filepath.Clean(r.URL.Path)
+
+		// 1. 强制拦截：后台管理与核心静态资源走内置 dist
+		if strings.HasPrefix(path, "/admin") || strings.HasPrefix(path, "/assets") {
+			target := filepath.Join("dist", path)
+			if fi, err := os.Stat(target); err == nil && !fi.IsDir() {
+				http.ServeFile(w, r, target)
+				return
+			}
+			http.ServeFile(w, r, "dist/index.html")
+			return
+		}
+
+		// 2. 读取当前激活的主题
+		var currentTheme string
+		err := database.DB.QueryRow("SELECT value FROM settings WHERE key = 'theme'").Scan(&currentTheme)
+		if err != nil || currentTheme == "" {
+			currentTheme = "default"
+		}
+
+		// 3. 内置主题回退：直接使用内置 dist
+		if currentTheme == "default" || currentTheme == "matrix" {
+			target := filepath.Join("dist", path)
+			if fi, err := os.Stat(target); err == nil && !fi.IsDir() {
+				http.ServeFile(w, r, target)
+				return
+			}
+			http.ServeFile(w, r, "dist/index.html")
+			return
+		}
+
+		// 4. 第三方主题代理：将请求映射至 data/themes/{theme}/dist
+		themeDir := filepath.Join("data", "themes", currentTheme, "dist")
+		target := filepath.Join(themeDir, path)
+		if fi, err := os.Stat(target); err == nil && !fi.IsDir() {
+			http.ServeFile(w, r, target)
+			return
+		}
+
+		// 缺失具体文件时，返回第三方主题的 index.html 交由其内部 router 处理
+		http.ServeFile(w, r, filepath.Join(themeDir, "index.html"))
+	})
+	
 
 	port := "8080"
 	logger.Log.Info("Backend API Server is starting", zap.String("port", port))

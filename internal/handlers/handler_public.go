@@ -332,7 +332,7 @@ func ApiPublicSettingsHandler(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := database.DB.Query(`
     SELECT key, value FROM settings 
-    WHERE key IN ('site_name', 'site_desc', 'custom_footer', 'site_icon', 'require_login', 'theme')
+    WHERE key IN ('site_name', 'site_desc', 'custom_footer', 'site_icon', 'require_login', 'theme', 'latest_version')
 `)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)

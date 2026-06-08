@@ -4,7 +4,7 @@ import (
 	// "bytes"
 	"encoding/json"
 	"fmt"
-	// "net/http"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -518,4 +518,31 @@ func StartDataRetentionTask() { // 注意：移除了传参，改为内部动态
 			}
 		}
 	}()
+}
+
+func StartVersionCheckTask() {
+	checkLatestVersion()
+	ticker := time.NewTicker(12 * time.Hour)
+	go func() {
+		for range ticker.C {
+			checkLatestVersion()
+		}
+	}()
+}
+
+func checkLatestVersion() {
+	resp, err := http.Get("https://api.github.com/repos/hhlli/Float/releases/latest")
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		var release struct {
+			TagName string `json:"tag_name"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&release); err == nil && release.TagName != "" {
+			database.DB.Exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('latest_version', ?)", release.TagName)
+		}
+	}
 }
