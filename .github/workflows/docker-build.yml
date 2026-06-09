@@ -56,7 +56,7 @@ jobs:
           cd backend
           VERSION=${GITHUB_REF_NAME:-dev}
           # 编译出名为 Float 的可执行文件，并注入动态版本号
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X 'Float/internal/database.ServerVersion=${VERSION}" -o Float ./cmd/server/main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X Float/internal/database.ServerVersion=${VERSION}" -o Float ./cmd/server/main.go
 
       # 5. 登录容器仓库
       - name: Log in to the Container registry
