@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: # 新增的手动触发器
+  workflow_dispatch: # 手动触发器
 
 jobs:
   build:
@@ -29,7 +29,6 @@ jobs:
             goarch: amd64
           - goos: windows
             goarch: arm64
-          # 若需要 macOS 版本可保留以下两行，不需要则删除
           - goos: darwin
             goarch: amd64
           - goos: darwin
@@ -42,7 +41,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21' # 请替换为 go.mod 中的实际版本
+          go-version: '1.26.2'
 
       - name: Build binary
         env:
@@ -53,8 +52,8 @@ jobs:
           if [ "${{ matrix.goos }}" = "windows" ]; then
             OUTPUT_NAME+='.exe'
           fi
-          # 根据你的目录树，入口文件为 cmd/server/main.go
-          go build -trimpath -ldflags="-s -w" -o $OUTPUT_NAME ./cmd/server/main.go
+          VERSION=${GITHUB_REF_NAME:-dev}
+          go build -trimpath -ldflags="-s -w -X Float/internal/database.ServerVersion=${VERSION}" -o $OUTPUT_NAME ./cmd/server/main.go
           
       - name: Upload to Release
         uses: softprops/action-gh-release@v1

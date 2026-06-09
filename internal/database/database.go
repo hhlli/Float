@@ -12,7 +12,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const ServerVersion = "v1.0.1"
+var ServerVersion = "dev"
 // ── 全局内存缓存 (用于 SLA 和历史状态) ──────────────────────────
 var (
 	HeatmapCacheMap    map[string]map[string]int
