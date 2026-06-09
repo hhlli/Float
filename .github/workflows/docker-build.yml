@@ -49,13 +49,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21' # 需确保与你 go.mod 中的版本一致
+          go-version: '1.26.2'
 
       - name: Build Backend
         run: |
           cd backend
-          # 编译出名为 Float 的可执行文件
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o Float ./cmd/server/main.go 
+          VERSION=${GITHUB_REF_NAME:-dev}
+          # 编译出名为 Float 的可执行文件，并注入动态版本号
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X 'Float/internal/database.ServerVersion=${VERSION}" -o Float ./cmd/server/main.go
 
       # 5. 登录容器仓库
       - name: Log in to the Container registry

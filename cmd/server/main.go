@@ -211,6 +211,7 @@ func runServer(cmd *cobra.Command, args []string) {
     http.HandleFunc("/api/admin/settings/geoip/test", withLogging(authMiddleware(handlers.ApiTestGeoIPHandler)))
     http.HandleFunc("/api/admin/sessions", withLogging(authMiddleware(handlers.ApiGetSessionsHandler)))
 	http.HandleFunc("/api/admin/sessions/revoke", withLogging(authMiddleware(handlers.ApiRevokeSessionHandler)))
+	http.HandleFunc("/api/admin/settings/tg/webhook", withLogging(authMiddleware(handlers.ApiManageTelegramWebhookHandler)))
 
 	// 2. 公开 API (探针和访客)
 	http.HandleFunc("/api/admin/login", withLogging(handlers.ApiLoginHandler))
@@ -227,6 +228,8 @@ func runServer(cmd *cobra.Command, args []string) {
 	http.HandleFunc("/api/tasks/push", withLogging(handlers.ApiTaskResultHandler))
 	http.HandleFunc("/api/auth/github/login", withLogging(handlers.OAuthGithubLoginHandler))
 	http.HandleFunc("/api/auth/github/callback", withLogging(handlers.OAuthGithubCallbackHandler))
+	// 新增 Telegram Webhook 路由 (不需要 authMiddleware，内部依靠 chat_id 鉴权)
+    http.HandleFunc("/api/telegram/webhook", withLogging(handlers.ApiTelegramWebhookHandler))
     
 	// 3. WebSocket 路由
 	http.HandleFunc("/agent/ws", handlers.WsAgentHandler)
