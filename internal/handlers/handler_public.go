@@ -46,6 +46,7 @@ type PublicStaticServerNode struct {
 	History24H       []HourlyStatus  `json:"history_24h"`
 	LastActive       int64           `json:"last_active"` // 供状态计算逻辑使用
 	CreatedAt        int64           `json:"created_at"` // 👇 追加此行
+	Capabilities     []string        `json:"capabilities"` // 🌟 新增能力字段
 }
 
 // 动态实时指标结构体
@@ -78,7 +79,7 @@ type PublicRealtimeServerNode struct {
 func ApiPublicStaticServersHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := database.DB.Query(`
         SELECT node_id, name, region, cost, currency, billing_cycle, billing_date, monthly_bw, bw_reset_day, notes, 
-               os, kernel, arch, virt, cpu_model, agent_version, docker_containers, last_active, created_at 
+               os, kernel, arch, virt, cpu_model, agent_version, docker_containers, last_active, created_at, capabilities 
         FROM servers WHERE is_hidden = 0
     `)
 	if err != nil {
@@ -95,11 +96,11 @@ func ApiPublicStaticServersHandler(w http.ResponseWriter, r *http.Request) {
 		var cost, monthlyBW sql.NullFloat64
 		var bwResetDay sql.NullInt32
 		var lastActive, createdAt sql.NullInt64
-		var dockerContainers sql.NullString
+		var dockerContainers, capabilitiesStr sql.NullString
 
 		err := rows.Scan(
 			&s.NodeID, &s.Name, &region, &cost, &currency, &billingCycle, &billingDate, &monthlyBW, &bwResetDay, &notes,
-			&os, &kernel, &arch, &virt, &cpuModel, &agentVersion, &dockerContainers, &lastActive, &createdAt,
+			&os, &kernel, &arch, &virt, &cpuModel, &agentVersion, &dockerContainers, &lastActive, &createdAt, &capabilitiesStr, // 🌟 追加
 		)
 		if err != nil {
 			logger.Log.Error("Row scan error", 
@@ -128,6 +129,14 @@ func ApiPublicStaticServersHandler(w http.ResponseWriter, r *http.Request) {
 		s.AgentVersion = agentVersion.String
 		s.LastActive = lastActive.Int64
 		s.CreatedAt = createdAt.Int64
+
+		// 🌟 反序列化 Capabilities
+		if capabilitiesStr.Valid && capabilitiesStr.String != "" {
+			json.Unmarshal([]byte(capabilitiesStr.String), &s.Capabilities)
+		}
+		if s.Capabilities == nil {
+			s.Capabilities = []string{}
+		}
 
 		if dockerContainers.Valid && dockerContainers.String != "" {
 			s.DockerContainers = json.RawMessage(dockerContainers.String)
@@ -353,7 +362,9 @@ func ApiPublicSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	settings["server_lon"] = "121.4737"
 
 	// 后端请求不带 IP 的 JSON 接口，直接获取服务器本土公网位置
-	if resp, err := http.Get("http://ip-api.com/json/"); err == nil {
+	client := &http.Client{Timeout: 3 * time.Second}
+	if resp, err := client.Get("http://ip-api.com/json/"); err == nil {
+		defer resp.Body.Close()
 		var geo struct {
 			Status string  `json:"status"`
 			Lat    float64 `json:"lat"`
@@ -363,7 +374,6 @@ func ApiPublicSettingsHandler(w http.ResponseWriter, r *http.Request) {
 			settings["server_lat"] = fmt.Sprintf("%.4f", geo.Lat)
 			settings["server_lon"] = fmt.Sprintf("%.4f", geo.Lon)
 		}
-		resp.Body.Close()
 	}
 
 	settings["server_version"] = database.ServerVersion

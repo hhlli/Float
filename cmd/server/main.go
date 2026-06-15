@@ -212,6 +212,10 @@ func runServer(cmd *cobra.Command, args []string) {
     http.HandleFunc("/api/admin/sessions", withLogging(authMiddleware(handlers.ApiGetSessionsHandler)))
 	http.HandleFunc("/api/admin/sessions/revoke", withLogging(authMiddleware(handlers.ApiRevokeSessionHandler)))
 	http.HandleFunc("/api/admin/settings/tg/webhook", withLogging(authMiddleware(handlers.ApiManageTelegramWebhookHandler)))
+	// 👇 插入开始：拓展插件管理 API
+	http.HandleFunc("/api/admin/extensions/list", withLogging(authMiddleware(handlers.ApiListExtensionsHandler)))
+	http.HandleFunc("/api/admin/extensions/install", withLogging(authMiddleware(handlers.ApiInstallExtensionHandler)))
+	http.HandleFunc("/api/admin/extensions/uninstall", withLogging(authMiddleware(handlers.ApiUninstallExtensionHandler)))
 
 	// 2. 公开 API (探针和访客)
 	http.HandleFunc("/api/admin/login", withLogging(handlers.ApiLoginHandler))

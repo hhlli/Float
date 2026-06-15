@@ -463,8 +463,6 @@ func parseDate(s string) (time.Time, error) {
 
 // ── 数据保留任务 ──────────────────────────────────────────────────────────────
 
-// ── 数据保留任务 ──────────────────────────────────────────────────────────────
-
 func StartDataRetentionTask() { // 注意：移除了传参，改为内部动态获取配置
 	ticker := time.NewTicker(1 * time.Hour)
 	go func() {
@@ -492,28 +490,43 @@ func StartDataRetentionTask() { // 注意：移除了传参，改为内部动态
 				pingCutoff = time.Now().Unix() - int64(pingDays*24*3600)
 			}
 
-			// 清理负载过期数据 (metrics 表)
-			resMetrics, err1 := database.DB.Exec("DELETE FROM metrics WHERE timestamp < ?", loadCutoff)
-			// 清理 Ping 过期数据 (task_results 表)
-			resTasks, err2 := database.DB.Exec("DELETE FROM task_results WHERE timestamp < ?", pingCutoff)
+			var totalMetricsDeleted, totalTasksDeleted int64
 
-			if err1 != nil || err2 != nil {
-				logger.Log.Error("清理过期数据出现错误", 
-					zap.String("module", "Retention"),
-					zap.NamedError("metrics_err", err1),
-					zap.NamedError("tasks_err", err2),
-				)
-				continue
+			// 分批清理负载过期数据 (metrics 表)，使用 rowid 子查询确保 SQLite 兼容性
+			for {
+				res, err := database.DB.Exec("DELETE FROM metrics WHERE rowid IN (SELECT rowid FROM metrics WHERE timestamp < ? LIMIT 10000)", loadCutoff)
+				if err != nil {
+					logger.Log.Error("清理 metrics 过期数据出现错误", zap.String("module", "Retention"), zap.Error(err))
+					break
+				}
+				aff, _ := res.RowsAffected()
+				totalMetricsDeleted += aff
+				if aff < 10000 {
+					break // 影响行数小于 10000 说明已删完
+				}
+				time.Sleep(100 * time.Millisecond) // 强制释放锁，允许其他协程写入
 			}
 
-			rowsMetrics, _ := resMetrics.RowsAffected()
-			rowsTasks, _ := resTasks.RowsAffected()
+			// 分批清理 Ping 过期数据 (task_results 表)
+			for {
+				res, err := database.DB.Exec("DELETE FROM task_results WHERE rowid IN (SELECT rowid FROM task_results WHERE timestamp < ? LIMIT 10000)", pingCutoff)
+				if err != nil {
+					logger.Log.Error("清理 task_results 过期数据出现错误", zap.String("module", "Retention"), zap.Error(err))
+					break
+				}
+				aff, _ := res.RowsAffected()
+				totalTasksDeleted += aff
+				if aff < 10000 {
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
 
-			if rowsMetrics > 0 || rowsTasks > 0 {
+			if totalMetricsDeleted > 0 || totalTasksDeleted > 0 {
 				logger.Log.Info("已清理过期数据", 
 					zap.String("module", "Retention"),
-					zap.Int64("metrics_deleted", rowsMetrics),
-					zap.Int64("tasks_deleted", rowsTasks),
+					zap.Int64("metrics_deleted", totalMetricsDeleted),
+					zap.Int64("tasks_deleted", totalTasksDeleted),
 				)
 			}
 		}
@@ -531,7 +544,8 @@ func StartVersionCheckTask() {
 }
 
 func checkLatestVersion() {
-	resp, err := http.Get("https://api.github.com/repos/hhlli/Float/releases/latest")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/hhlli/Float/releases/latest")
 	if err != nil {
 		return
 	}

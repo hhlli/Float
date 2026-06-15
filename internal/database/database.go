@@ -136,6 +136,17 @@ func InitDB() {
 		node_id TEXT, date TEXT, online_mins INTEGER DEFAULT 1, PRIMARY KEY(node_id, date)
 	);`)
 
+	// 🌟 新增：增加能力状态字段，以及 MTR 专表
+	DB.Exec(`ALTER TABLE servers ADD COLUMN capabilities TEXT DEFAULT '[]';`)
+	DB.Exec(`CREATE TABLE IF NOT EXISTS mtr_results (
+		node_id TEXT, 
+		target TEXT, 
+		timestamp INTEGER, 
+		result_json TEXT, 
+		PRIMARY KEY(node_id, target)
+	);`)
+	
+
 	// 生成默认密码哈希
 	defaultHash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
 	if err != nil {

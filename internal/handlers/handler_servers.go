@@ -52,6 +52,7 @@ type AdminStaticServerNode struct {
 	DockerContainers json.RawMessage `json:"docker_containers"`
 	BillingCycle     string          `json:"billing_cycle"`
 	TerminalEnabled  int             `json:"terminal_enabled"`
+	Capabilities     []string        `json:"capabilities"`
 }
 
 type AdminRealtimeServerNode struct {
@@ -83,7 +84,7 @@ func ApiStaticNodesHandler(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := database.DB.Query(`
 		SELECT node_id, auth_token, name, ipv4, ipv6, region, cost, currency, billing_date, monthly_bw, bw_reset_day, notes,
-		       os, kernel, arch, virt, cpu_model, agent_version, is_hidden, docker_containers, billing_cycle, terminal_enabled 
+		       os, kernel, arch, virt, cpu_model, agent_version, is_hidden, docker_containers, billing_cycle, terminal_enabled, capabilities 
 		FROM servers
 	`)
 	if err != nil {
@@ -101,12 +102,11 @@ func ApiStaticNodesHandler(w http.ResponseWriter, r *http.Request) {
 		var isHidden sql.NullInt32
 		var terminalEnabled sql.NullInt32
 		var kernel, arch, virt, cpuModel, agentVersion, authToken sql.NullString
-		var dockerContainers sql.NullString
-		var billingCycle sql.NullString
+		var dockerContainers, billingCycle, capabilitiesStr sql.NullString // 🌟 新增 capabilitiesStr
 
 		err := rows.Scan(
 			&s.NodeID, &authToken, &s.Name, &ipv4, &ipv6, &region, &cost, &currency, &billingDate, &monthlyBW, &bwResetDay, &notes,
-			&os, &kernel, &arch, &virt, &cpuModel, &agentVersion, &isHidden, &dockerContainers, &billingCycle, &terminalEnabled,
+			&os, &kernel, &arch, &virt, &cpuModel, &agentVersion, &isHidden, &dockerContainers, &billingCycle, &terminalEnabled, &capabilitiesStr, // 🌟 追加
 		)
 		if err != nil {
 			logger.Log.Error("Static row scan error", 
@@ -138,6 +138,14 @@ func ApiStaticNodesHandler(w http.ResponseWriter, r *http.Request) {
 			s.BillingCycle = "month"
 		}
 		s.TerminalEnabled = int(terminalEnabled.Int32)
+
+		// 🌟 反序列化 Capabilities
+		if capabilitiesStr.Valid && capabilitiesStr.String != "" {
+			json.Unmarshal([]byte(capabilitiesStr.String), &s.Capabilities)
+		}
+		if s.Capabilities == nil {
+			s.Capabilities = []string{}
+		}
 
 		if dockerContainers.Valid && dockerContainers.String != "" {
 			s.DockerContainers = json.RawMessage(dockerContainers.String)

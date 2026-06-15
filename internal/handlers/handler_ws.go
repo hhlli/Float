@@ -117,6 +117,7 @@ type AgentReport struct {
 			MemPct float64 `json:"mem_pct,omitempty"`
 		} `json:"docker_containers,omitempty"`
 		TerminalEnabled bool `json:"terminal_enabled"`
+		Capabilities    []string `json:"capabilities,omitempty"`
 	} `json:"data"`
 }
 
@@ -147,6 +148,7 @@ var (
 type FrontendClient struct {
 	conn *websocket.Conn
 	mu   sync.Mutex
+	send chan []byte // 新增：独立缓冲发送通道
 }
 
 var (
@@ -163,13 +165,11 @@ func BroadcastRealtimeData(data interface{}) {
 
 	frontendClientsMu.RLock()
 	for client := range frontendClients {
-		// 采用异步发送，防止某个由于网络波动的慢节点阻塞整个广播队列
-		go func(c *FrontendClient) {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			c.conn.WriteMessage(websocket.TextMessage, msg)
-		}(client)
+		// 采用非阻塞通道写入，如果缓冲区满（前端网络卡顿导致消费慢），则直接丢弃该帧，防止阻塞全局广播
+		select {
+		case client.send <- msg:
+		default:
+		}
 	}
 	frontendClientsMu.RUnlock()
 }
@@ -336,12 +336,19 @@ func WsAgentHandler(w http.ResponseWriter, r *http.Request) {
 				dockerJSON = []byte("[]")
 			}
 
+			// 🌟 新增：序列化 Capabilities 数据
+			capJSON, _ := json.Marshal(d.Capabilities)
+			if string(capJSON) == "null" {
+				capJSON = []byte("[]")
+			}
+
 			now := time.Now().Unix()
 			terminalStatus := 0
 			if d.TerminalEnabled {
 				terminalStatus = 1
 			}
 
+			// 🌟 修改 UPDATE 语句，追加 capabilities=? 及其对应参数
 			res, err := database.DB.Exec(`
 				UPDATE servers SET 
 					last_active=?, cpu=?, mem=?, mem_used=?, mem_total=?, 
@@ -350,7 +357,8 @@ func WsAgentHandler(w http.ResponseWriter, r *http.Request) {
 					swap_used=?, swap_total=?, tcp_conn=?, udp_conn=?, 
 					kernel=?, arch=?, virt=?, cpu_model=?, processes=?, 
 					load_1=?, load_5=?, load_15=?, ipv4=?, ipv6=?, 
-					agent_version=?, docker_containers=?, status='online', terminal_enabled=?
+					agent_version=?, docker_containers=?, status='online', terminal_enabled=?,
+					capabilities=?
 				WHERE node_id=?;
 			`,
 				now, d.CPU, d.Mem, d.MemUsed, d.MemTotal,
@@ -360,6 +368,7 @@ func WsAgentHandler(w http.ResponseWriter, r *http.Request) {
 				d.Kernel, d.Arch, d.Virt, d.CPUModel, d.Processes,
 				d.Load1, d.Load5, d.Load15, finalIPv4, d.IPv6,
 				d.AgentVersion, string(dockerJSON), terminalStatus,
+				string(capJSON), // 传入能力字段
 				report.NodeID,
 			)
 
@@ -456,6 +465,30 @@ func WsAgentHandler(w http.ResponseWriter, r *http.Request) {
 			)
 			if err != nil {
 				logger.Log.Error("Failed to insert task result", zap.String("module", "DB"), zap.Error(err))
+			}
+			sendRPCResult(conn, ac, req.ID, "ok")
+
+		case "mtr.report":
+			var mtrData struct {
+				Target    string          `json:"target"`
+				Timestamp int64           `json:"timestamp"`
+				Result    json.RawMessage `json:"result"`
+			}
+			if err := json.Unmarshal(req.Params, &mtrData); err != nil {
+				sendRPCError(conn, ac, req.ID, -32600, "invalid mtr params")
+				continue
+			}
+
+			_, err := database.DB.Exec(`
+				INSERT INTO mtr_results (node_id, target, timestamp, result_json) 
+				VALUES (?, ?, ?, ?) 
+				ON CONFLICT(node_id, target) DO UPDATE SET 
+				timestamp = excluded.timestamp, 
+				result_json = excluded.result_json;
+			`, nodeID, mtrData.Target, mtrData.Timestamp, string(mtrData.Result))
+			
+			if err != nil {
+				logger.Log.Error("Failed to save MTR result", zap.String("module", "DB"), zap.Error(err))
 			}
 			sendRPCResult(conn, ac, req.ID, "ok")
 
@@ -566,16 +599,34 @@ func WsFrontendHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &FrontendClient{conn: conn}
+	// 初始化客户端并分配 256 长度的缓冲通道
+	client := &FrontendClient{
+		conn: conn,
+		send: make(chan []byte, 256),
+	}
 
 	frontendClientsMu.Lock()
 	frontendClients[client] = true
 	frontendClientsMu.Unlock()
 
+	// 启动该客户端专属的常驻写入协程
+	go func() {
+		for msg := range client.send {
+			client.mu.Lock()
+			client.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			client.conn.WriteMessage(websocket.TextMessage, msg)
+			client.mu.Unlock()
+		}
+	}()
+
 	defer func() {
+		// 退出时：先从 Map 中移除，确保不再有新的广播数据进入
 		frontendClientsMu.Lock()
 		delete(frontendClients, client)
 		frontendClientsMu.Unlock()
+		
+		// 关闭通道，触发常驻写入协程自动退出，并关闭底层连接
+		close(client.send)
 		conn.Close()
 	}()
 

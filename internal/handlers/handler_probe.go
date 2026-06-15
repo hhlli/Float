@@ -140,6 +140,7 @@ func ApiReceiveHandler(w http.ResponseWriter, r *http.Request) {
 			Load1      float64 `json:"load_1"`
 			Load5      float64 `json:"load_5"`
 			Load15     float64 `json:"load_15"`
+			Capabilities []string `json:"capabilities,omitempty"`
 		} `json:"data"`
 	}
 
@@ -165,7 +166,13 @@ func ApiReceiveHandler(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().Unix()
 
-	// 变更为纯 UPDATE 逻辑
+	// 🌟 新增：序列化 Capabilities 数据
+	capJSON, _ := json.Marshal(payload.Data.Capabilities)
+	if string(capJSON) == "null" {
+		capJSON = []byte("[]")
+	}
+
+	// 🌟 变更为纯 UPDATE 逻辑，追加 capabilities
 	query := `
 		UPDATE servers SET 
 			last_active=?, cpu=?, mem=?, mem_used=?, mem_total=?, 
@@ -173,7 +180,7 @@ func ApiReceiveHandler(w http.ResponseWriter, r *http.Request) {
 			net_rx_speed=?, net_tx_speed=?, net_rx_total=?, net_tx_total=?, 
 			swap_used=?, swap_total=?, tcp_conn=?, udp_conn=?, 
 			kernel=?, arch=?, virt=?, cpu_model=?, processes=?, 
-			load_1=?, load_5=?, load_15=?, status='online'
+			load_1=?, load_5=?, load_15=?, status='online', capabilities=?
 		WHERE node_id=?;
 	`
 
@@ -184,6 +191,7 @@ func ApiReceiveHandler(w http.ResponseWriter, r *http.Request) {
 		payload.Data.SwapUsed, payload.Data.SwapTotal, payload.Data.TCPConn, payload.Data.UDPConn,
 		payload.Data.Kernel, payload.Data.Arch, payload.Data.Virt, payload.Data.CPUModel,
 		payload.Data.Processes, payload.Data.Load1, payload.Data.Load5, payload.Data.Load15,
+		string(capJSON), // 传入能力字段
 		payload.NodeID,
 	)
 	if err != nil {
@@ -403,11 +411,14 @@ func ApiPingDataHandler(w http.ResponseWriter, r *http.Request) {
 	case "1h":
 		bucketSeconds = 60
 		timeLimit = 3600
+	case "3h": // 🌟 新增 3h 的查询范围处理
+		bucketSeconds = 60
+		timeLimit = 3 * 3600
 	case "6h":
 		bucketSeconds = 60
 		timeLimit = 6 * 3600
 	case "12h":
-		bucketSeconds = 600
+		bucketSeconds = 180 // 🌟 建议将 12h 的采样粒度从 600 秒调整到 180 或 300，让曲线不会显得太稀疏
 		timeLimit = 12 * 3600
 	case "1d", "24h":
 		bucketSeconds = 180
