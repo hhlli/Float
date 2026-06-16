@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"Float/internal/database"
 )
 
 // RequestAgentMTR 向探针下发 MTR 即时任务指令
 func RequestAgentMTR(nodeID, target string) bool {
-	// 直接读取同包下 handler_ws.go 中的 agentConns 和 agentConnsMu
 	agentConnsMu.RLock()
 	ac, ok := agentConns[nodeID]
 	agentConnsMu.RUnlock()
@@ -51,14 +51,19 @@ func ApiRunMTRHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 调用同包下 handler_tasks.go 中的 isValidTarget 函数
 	if !isValidTarget(req.Target) {
 		http.Error(w, "非法的目标格式", http.StatusBadRequest)
 		return
 	}
 
+	// 写入 pending 状态与当前时间戳，作为服务端判定超时的基准
+	pendingJSON := `{"status":"pending"}`
+	_, _ = database.DB.Exec("INSERT OR REPLACE INTO mtr_results (node_id, target, timestamp, result_json) VALUES (?, ?, ?, ?)", req.NodeID, req.Target, time.Now().Unix(), pendingJSON)
+
 	success := RequestAgentMTR(req.NodeID, req.Target)
 	if !success {
+		// 下发失败，清理占位数据
+		_, _ = database.DB.Exec("DELETE FROM mtr_results WHERE node_id = ? AND target = ?", req.NodeID, req.Target)
 		http.Error(w, "目标探针离线或未建立 WebSocket 连接", http.StatusServiceUnavailable)
 		return
 	}
@@ -87,6 +92,23 @@ func ApiGetMTRResultHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	// 服务端任务生命周期断言机制 (60 秒防死锁)
+	if resultJSON == `{"status":"pending"}` {
+		if time.Now().Unix()-timestamp > 60 {
+			errJSON := fmt.Sprintf(`{"status":"success","timestamp":%d,"data":{"target":"%s","error":"服务端判定任务超时 (超过 60 秒未收到探针回传数据，探针网络可能已中断)"}}`, timestamp, target)
+			
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(errJSON))
+			
+			database.DB.Exec("DELETE FROM mtr_results WHERE node_id = ? AND target = ?", nodeID, target)
+			return
+		}
+		
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"pending"}`))
 		return
 	}
 

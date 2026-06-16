@@ -141,7 +141,7 @@ PROXY_START_CMD="$BIN_PATH docker-proxy -listen 127.0.0.1:23750"
 # 5. Daemon registration and startup downgrade
 echo "⚙️ [4/4] Registering and starting background service..."
 
-if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+if command -v systemctl >/dev/null 2>&1 && [ -d "/run/systemd/system" ]; then
     echo "   -> Detected init system: systemd"
     if [ "$ENABLE_DOCKER" == "true" ]; then
         PROXY_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}-docker-proxy.service"
