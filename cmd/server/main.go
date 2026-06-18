@@ -216,6 +216,8 @@ func runServer(cmd *cobra.Command, args []string) {
 	http.HandleFunc("/api/admin/extensions/list", withLogging(authMiddleware(handlers.ApiListExtensionsHandler)))
 	http.HandleFunc("/api/admin/extensions/install", withLogging(authMiddleware(handlers.ApiInstallExtensionHandler)))
 	http.HandleFunc("/api/admin/extensions/uninstall", withLogging(authMiddleware(handlers.ApiUninstallExtensionHandler)))
+	http.HandleFunc("/api/admin/mtr/run", withLogging(authMiddleware(handlers.ApiRunMTRHandler)))
+    http.HandleFunc("/api/admin/mtr/result", withLogging(authMiddleware(handlers.ApiGetMTRResultHandler)))
 
 	// 2. 公开 API (探针和访客)
 	http.HandleFunc("/api/admin/login", withLogging(handlers.ApiLoginHandler))
@@ -227,6 +229,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	http.HandleFunc("/api/data/ping", withLogging(handlers.ApiPingDataHandler))
 	http.HandleFunc("/api/data/ping/summary", withLogging(handlers.ApiPingSummaryHandler)) // 🌟 新增这一行
 	http.HandleFunc("/api/report", withLogging(handlers.ApiReceiveHandler))
+	http.HandleFunc("/api/agent/mtr/report", withLogging(handlers.ApiReportMTRHandler))
     http.HandleFunc("/agent/register", withLogging(handlers.ApiRegisterHandler))
 	http.HandleFunc("/api/tasks/pull", withLogging(handlers.ApiPullTasksHandler))
 	http.HandleFunc("/api/tasks/push", withLogging(handlers.ApiTaskResultHandler))

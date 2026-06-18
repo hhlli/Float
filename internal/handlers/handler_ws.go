@@ -117,7 +117,6 @@ type AgentReport struct {
 			MemPct float64 `json:"mem_pct,omitempty"`
 		} `json:"docker_containers,omitempty"`
 		TerminalEnabled bool `json:"terminal_enabled"`
-		Capabilities    []string `json:"capabilities,omitempty"`
 	} `json:"data"`
 }
 
@@ -336,19 +335,12 @@ func WsAgentHandler(w http.ResponseWriter, r *http.Request) {
 				dockerJSON = []byte("[]")
 			}
 
-			// 🌟 新增：序列化 Capabilities 数据
-			capJSON, _ := json.Marshal(d.Capabilities)
-			if string(capJSON) == "null" {
-				capJSON = []byte("[]")
-			}
-
 			now := time.Now().Unix()
 			terminalStatus := 0
 			if d.TerminalEnabled {
 				terminalStatus = 1
 			}
 
-			// 🌟 修改 UPDATE 语句，追加 capabilities=? 及其对应参数
 			res, err := database.DB.Exec(`
 				UPDATE servers SET 
 					last_active=?, cpu=?, mem=?, mem_used=?, mem_total=?, 
@@ -357,8 +349,7 @@ func WsAgentHandler(w http.ResponseWriter, r *http.Request) {
 					swap_used=?, swap_total=?, tcp_conn=?, udp_conn=?, 
 					kernel=?, arch=?, virt=?, cpu_model=?, processes=?, 
 					load_1=?, load_5=?, load_15=?, ipv4=?, ipv6=?, 
-					agent_version=?, docker_containers=?, status='online', terminal_enabled=?,
-					capabilities=?
+					agent_version=?, docker_containers=?, status='online', terminal_enabled=?
 				WHERE node_id=?;
 			`,
 				now, d.CPU, d.Mem, d.MemUsed, d.MemTotal,
@@ -368,7 +359,6 @@ func WsAgentHandler(w http.ResponseWriter, r *http.Request) {
 				d.Kernel, d.Arch, d.Virt, d.CPUModel, d.Processes,
 				d.Load1, d.Load5, d.Load15, finalIPv4, d.IPv6,
 				d.AgentVersion, string(dockerJSON), terminalStatus,
-				string(capJSON), // 传入能力字段
 				report.NodeID,
 			)
 
@@ -468,30 +458,6 @@ func WsAgentHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			sendRPCResult(conn, ac, req.ID, "ok")
 
-		case "mtr.report":
-			var mtrData struct {
-				Target    string          `json:"target"`
-				Timestamp int64           `json:"timestamp"`
-				Result    json.RawMessage `json:"result"`
-			}
-			if err := json.Unmarshal(req.Params, &mtrData); err != nil {
-				sendRPCError(conn, ac, req.ID, -32600, "invalid mtr params")
-				continue
-			}
-
-			_, err := database.DB.Exec(`
-				INSERT INTO mtr_results (node_id, target, timestamp, result_json) 
-				VALUES (?, ?, ?, ?) 
-				ON CONFLICT(node_id, target) DO UPDATE SET 
-				timestamp = excluded.timestamp, 
-				result_json = excluded.result_json;
-			`, nodeID, mtrData.Target, mtrData.Timestamp, string(mtrData.Result))
-			
-			if err != nil {
-				logger.Log.Error("Failed to save MTR result", zap.String("module", "DB"), zap.Error(err))
-			}
-			sendRPCResult(conn, ac, req.ID, "ok")
-
 		default:
 			sendRPCError(conn, ac, req.ID, -32601, "method not found")
 		}
@@ -551,6 +517,7 @@ func sendRPCError(conn *websocket.Conn, ac *AgentConn, id interface{}, code int,
 	defer ac.mu.Unlock()
 	conn.WriteJSON(resp)
 }
+
 
 // ── 暴露给终端模块的辅助函数 ──────────────────────────────────
 func RequestAgentTerminal(nodeID, sessionID string) bool {
