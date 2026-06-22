@@ -218,6 +218,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	http.HandleFunc("/api/admin/extensions/uninstall", withLogging(authMiddleware(handlers.ApiUninstallExtensionHandler)))
 	http.HandleFunc("/api/admin/mtr/run", withLogging(authMiddleware(handlers.ApiRunMTRHandler)))
     http.HandleFunc("/api/admin/mtr/result", withLogging(authMiddleware(handlers.ApiGetMTRResultHandler)))
+    http.HandleFunc("/api/admin/mtr/history", withLogging(authMiddleware(handlers.ApiGetMTRHistoryHandler)))
 
 	// 2. 公开 API (探针和访客)
 	http.HandleFunc("/api/admin/login", withLogging(handlers.ApiLoginHandler))

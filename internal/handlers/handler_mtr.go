@@ -169,6 +169,29 @@ func ApiReportMTRHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 将成功的诊断结果同步追加到历史表，并仅保留最近 5 条
+	var resultObj map[string]interface{}
+	if errJson := json.Unmarshal(req.Result, &resultObj); errJson == nil {
+		if _, hasError := resultObj["error"]; !hasError {
+			// 1. 插入最新的一条记录
+			database.DB.Exec(
+				"INSERT INTO mtr_history (node_id, target, timestamp, result_json) VALUES (?, ?, ?, ?)",
+				req.NodeID, req.Target, req.Timestamp, resultStr,
+			)
+
+			// 2. 清理多余记录，仅保留该节点的最近 5 条
+			database.DB.Exec(`
+				DELETE FROM mtr_history 
+				WHERE node_id = ? AND id NOT IN (
+					SELECT id FROM mtr_history 
+					WHERE node_id = ? 
+					ORDER BY timestamp DESC 
+					LIMIT 5
+				)
+			`, req.NodeID, req.NodeID)
+		}
+	}
+
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
 		logger.Log.Warn("MTR Report 未匹配到 pending 记录", zap.String("node_id", req.NodeID), zap.String("target", req.Target))
@@ -176,4 +199,52 @@ func ApiReportMTRHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"success"}`))
+}
+
+// ApiGetMTRHistoryHandler [API] 获取 MTR 历史记录列表
+func ApiGetMTRHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.URL.Query().Get("node_id")
+	limit := 50
+
+	var rows *sql.Rows
+	var err error
+
+	if nodeID != "" {
+		rows, err = database.DB.Query("SELECT id, node_id, target, timestamp, result_json FROM mtr_history WHERE node_id = ? ORDER BY timestamp DESC LIMIT ?", nodeID, limit)
+	} else {
+		rows, err = database.DB.Query("SELECT id, node_id, target, timestamp, result_json FROM mtr_history ORDER BY timestamp DESC LIMIT ?", limit)
+	}
+
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var records []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var nID, target, resultJSON string
+		var timestamp int64
+
+		if err := rows.Scan(&id, &nID, &target, &timestamp, &resultJSON); err == nil {
+			var rawData json.RawMessage
+			json.Unmarshal([]byte(resultJSON), &rawData)
+
+			records = append(records, map[string]interface{}{
+				"id":          id,
+				"node_id":     nID,
+				"target":      target,
+				"timestamp":   timestamp,
+				"result_data": rawData,
+			})
+		}
+	}
+
+	if records == nil {
+		records = make([]map[string]interface{}, 0)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(records)
 }

@@ -146,6 +146,16 @@ func InitDB() {
 		PRIMARY KEY(node_id, target)
 	);`)
 	
+	// 追加历史记录表与索引
+	DB.Exec(`CREATE TABLE IF NOT EXISTS mtr_history (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		node_id TEXT,
+		target TEXT,
+		timestamp INTEGER,
+		result_json TEXT
+	);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_mtr_history_node_time ON mtr_history(node_id, timestamp);`)
+	
 
 	// 生成默认密码哈希
 	defaultHash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
