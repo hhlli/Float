@@ -138,23 +138,29 @@ func InitDB() {
 
 	// 🌟 新增：增加能力状态字段，以及 MTR 专表
 	DB.Exec(`ALTER TABLE servers ADD COLUMN capabilities TEXT DEFAULT '[]';`)
-	DB.Exec(`CREATE TABLE IF NOT EXISTS mtr_results (
-		node_id TEXT, 
-		target TEXT, 
-		timestamp INTEGER, 
-		result_json TEXT, 
-		PRIMARY KEY(node_id, target)
+	// 建立通用插件即时任务状态表
+	DB.Exec(`CREATE TABLE IF NOT EXISTS plugin_results (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		node_id TEXT NOT NULL,
+		ext_id TEXT NOT NULL,
+		task_id INTEGER NOT NULL,
+		timestamp INTEGER NOT NULL,
+		status TEXT NOT NULL,
+		result_json TEXT,
+		UNIQUE(node_id, ext_id, task_id)
 	);`)
 	
-	// 追加历史记录表与索引
-	DB.Exec(`CREATE TABLE IF NOT EXISTS mtr_history (
+	// 建立通用插件历史记录表与索引
+	DB.Exec(`CREATE TABLE IF NOT EXISTS plugin_history (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		node_id TEXT,
-		target TEXT,
-		timestamp INTEGER,
+		node_id TEXT NOT NULL,
+		ext_id TEXT NOT NULL,
+		task_id INTEGER NOT NULL,
+		timestamp INTEGER NOT NULL,
+		status TEXT NOT NULL,
 		result_json TEXT
 	);`)
-	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_mtr_history_node_time ON mtr_history(node_id, timestamp);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_plugin_history_node_time ON plugin_history(node_id, timestamp);`)
 	
 
 	// 生成默认密码哈希

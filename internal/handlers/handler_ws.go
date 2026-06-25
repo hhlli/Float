@@ -261,8 +261,9 @@ func WsAgentHandler(w http.ResponseWriter, r *http.Request) {
 	defer close(stopPing)
 
 	for {
-		var req RPCRequest
-		if err := conn.ReadJSON(&req); err != nil {
+		// 先使用 map 解析，以区分 Request 和 Response
+		var rawMsg map[string]interface{}
+		if err := conn.ReadJSON(&rawMsg); err != nil {
 			if nodeID != "" {
 				agentConnsMu.Lock()
 				delete(agentConns, nodeID)
@@ -273,6 +274,44 @@ func WsAgentHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+
+		// 拦截探针返回的 JSON-RPC Response
+		_, hasMethod := rawMsg["method"].(string)
+		_, hasID := rawMsg["id"]
+		if !hasMethod && hasID {
+			if resultRaw, ok := rawMsg["result"].(map[string]interface{}); ok {
+				// 1. 拦截安装/卸载响应 (状态闭环预留)
+				if action, isExt := resultRaw["action"].(string); isExt {
+					nodeID, _ := resultRaw["node_id"].(string)
+					extID, _ := resultRaw["ext_id"].(string)
+					if action == "install" {
+						go processExtensionInstallSuccess(nodeID, extID)
+					} else if action == "uninstall" {
+						go processExtensionUninstallSuccess(nodeID, extID)
+					}
+					continue
+				}
+
+				// 2. 通用插件执行结果落库
+				if extID, isPluginExec := resultRaw["ext_id"].(string); isPluginExec {
+					nodeID, _ := resultRaw["node_id"].(string)
+					taskIDFloat, _ := rawMsg["id"].(float64)
+					taskID := int64(taskIDFloat)
+					timestampFloat, _ := resultRaw["timestamp"].(float64)
+					timestamp := int64(timestampFloat)
+					
+					resultBytes, _ := json.Marshal(resultRaw["result"])
+					go processPluginReportDB(nodeID, extID, taskID, timestamp, resultBytes)
+					continue
+				}
+			}
+			continue
+		}
+
+		// 原有的 Request 路由逻辑保持不变
+		var req RPCRequest
+		msgBytes, _ := json.Marshal(rawMsg)
+		_ = json.Unmarshal(msgBytes, &req)
 
 		switch req.Method {
 		case "report":
@@ -621,5 +660,46 @@ func WsFrontendHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			break
 		}
+	}
+}
+
+func processPluginReportDB(nodeID, extID string, taskID int64, timestamp int64, result json.RawMessage) {
+	resultStr := string(result)
+	
+	// 更新当前任务状态
+	res, err := database.DB.Exec(
+		"UPDATE plugin_results SET result_json = ?, status = 'success', timestamp = ? WHERE node_id = ? AND ext_id = ? AND task_id = ?",
+		resultStr, timestamp, nodeID, extID, taskID,
+	)
+
+	if err != nil {
+		logger.Log.Error("Plugin Report 落库更新失败", zap.Error(err))
+		return
+	}
+
+	// 解析结果，若无 error 字段则计入历史记录
+	var resultObj map[string]interface{}
+	if errJson := json.Unmarshal(result, &resultObj); errJson == nil {
+		if _, hasError := resultObj["error"]; !hasError {
+			database.DB.Exec(
+				"INSERT INTO plugin_history (node_id, ext_id, task_id, timestamp, status, result_json) VALUES (?, ?, ?, ?, 'success', ?)",
+				nodeID, extID, taskID, timestamp, resultStr,
+			)
+			// 保留每个节点每个插件最近 10 条历史记录
+			database.DB.Exec(`
+				DELETE FROM plugin_history 
+				WHERE node_id = ? AND ext_id = ? AND id NOT IN (
+					SELECT id FROM plugin_history 
+					WHERE node_id = ? AND ext_id = ?
+					ORDER BY timestamp DESC 
+					LIMIT 10
+				)
+			`, nodeID, extID, nodeID, extID)
+		}
+	}
+
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		logger.Log.Warn("Plugin Report 未匹配到 pending 记录", zap.String("node_id", nodeID), zap.String("ext_id", extID), zap.Int64("task_id", taskID))
 	}
 }

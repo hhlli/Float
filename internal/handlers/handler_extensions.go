@@ -3,25 +3,30 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"Float/internal/database"
 )
 
 type ExtensionInfo struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Description    string   `json:"description"`
-	Version        string   `json:"version"`
-	InstalledNodes []string `json:"installed_nodes"` // 变更为数组
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	Description      string   `json:"description"`
+	Version          string   `json:"version"`
+	DownloadURL      string   `json:"download_url"`
+	RequirePrivilege bool     `json:"require_privilege"`
+	InstalledNodes   []string `json:"installed_nodes"`
 }
 
 var availableExtensions = []ExtensionInfo{
 	{
-		ID:             "mtr-plugin",
-		Name:           "MTR 路由追踪",
-		Description:    "提供从探针节点到目标 IP 的全链路 MTR 路由追踪诊断能力。",
-		Version:        "v1.0.0",
-		InstalledNodes: []string{},
+		ID:               "mtr-plugin",
+		Name:             "MTR 路由追踪",
+		Description:      "提供从探针节点到目标 IP 的全链路 MTR 路由追踪诊断能力。",
+		Version:          "v1.0.0",
+		DownloadURL:      "https://mirror.ghproxy.com/https://github.com/hhlli/float-mtr-plugin/releases/latest/download/float-mtr-plugin",
+		RequirePrivilege: true,
+		InstalledNodes:   []string{},
 	},
 }
 
@@ -46,6 +51,30 @@ func saveInstalledNodes(extID string, nodes []string) error {
 	return err
 }
 
+// processExtensionInstallSuccess 探针回传安装成功后，真实写入数据库 (闭环落地)
+func processExtensionInstallSuccess(nodeID, extID string) {
+	nodes := getInstalledNodes(extID)
+	for _, n := range nodes {
+		if n == nodeID {
+			return // 已存在
+		}
+	}
+	nodes = append(nodes, nodeID)
+	saveInstalledNodes(extID, nodes)
+}
+
+// processExtensionUninstallSuccess 探针回传卸载成功后，从数据库剔除 (闭环落地)
+func processExtensionUninstallSuccess(nodeID, extID string) {
+	nodes := getInstalledNodes(extID)
+	var keptNodes []string
+	for _, n := range nodes {
+		if n != nodeID {
+			keptNodes = append(keptNodes, n)
+		}
+	}
+	saveInstalledNodes(extID, keptNodes)
+}
+
 // SyncNodeExtensions 供新探针上线时调用，检查自身是否在安装列表中
 func SyncNodeExtensions(nodeID string) {
 	for _, ext := range availableExtensions {
@@ -60,7 +89,12 @@ func SyncNodeExtensions(nodeID string) {
 					msg := RPCRequest{
 						JSONRPC: "2.0",
 						Method:  "extension.install",
-						Params:  mustMarshal(map[string]string{"id": ext.ID}),
+						Params: mustMarshal(map[string]interface{}{
+							"id":                ext.ID,
+							"download_url":      ext.DownloadURL,
+							"require_privilege": ext.RequirePrivilege,
+						}),
+						ID: time.Now().UnixNano(),
 					}
 					ac.mu.Lock()
 					_ = ac.conn.WriteJSON(msg)
@@ -85,7 +119,7 @@ func ApiListExtensionsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(exts)
 }
 
-// ApiInstallExtensionHandler 按节点列表安装插件
+// ApiInstallExtensionHandler 按节点列表安装插件 (剥离了直接落库逻辑)
 func ApiInstallExtensionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -101,34 +135,35 @@ func ApiInstallExtensionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 计算并集
-	existingNodes := getInstalledNodes(req.ID)
-	nodeMap := make(map[string]bool)
-	for _, n := range existingNodes {
-		nodeMap[n] = true
-	}
-	for _, n := range req.TargetNodes {
-		nodeMap[n] = true
-	}
-	var mergedNodes []string
-	for n := range nodeMap {
-		mergedNodes = append(mergedNodes, n)
+	var currentExt ExtensionInfo
+	found := false
+	for _, e := range availableExtensions {
+		if e.ID == req.ID {
+			currentExt = e
+			found = true
+			break
+		}
 	}
 
-	if err := saveInstalledNodes(req.ID, mergedNodes); err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
+	if !found {
+		http.Error(w, "Unknown extension ID", http.StatusBadRequest)
 		return
 	}
 
-	// 仅向本次选中的在线节点下发安装指令
-	go func(extID string, targets []string) {
+	// 仅向本次选中的在线节点下发安装指令，不再直接写入数据库
+	go func(ext ExtensionInfo, targets []string) {
 		agentConnsMu.RLock()
 		defer agentConnsMu.RUnlock()
 
 		msg := RPCRequest{
 			JSONRPC: "2.0",
 			Method:  "extension.install",
-			Params:  mustMarshal(map[string]string{"id": extID}),
+			Params: mustMarshal(map[string]interface{}{
+				"id":                ext.ID,
+				"download_url":      ext.DownloadURL,
+				"require_privilege": ext.RequirePrivilege,
+			}),
+			ID: time.Now().UnixNano(),
 		}
 
 		for _, nodeID := range targets {
@@ -140,13 +175,13 @@ func ApiInstallExtensionHandler(w http.ResponseWriter, r *http.Request) {
 				}(ac)
 			}
 		}
-	}(req.ID, req.TargetNodes)
+	}(currentExt, req.TargetNodes)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"success"}`))
 }
 
-// ApiUninstallExtensionHandler 按节点列表卸载插件
+// ApiUninstallExtensionHandler 按节点列表卸载插件 (剥离了直接落库逻辑)
 func ApiUninstallExtensionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -162,25 +197,7 @@ func ApiUninstallExtensionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 计算差集
-	existingNodes := getInstalledNodes(req.ID)
-	removeMap := make(map[string]bool)
-	for _, n := range req.TargetNodes {
-		removeMap[n] = true
-	}
-	var keptNodes []string
-	for _, n := range existingNodes {
-		if !removeMap[n] {
-			keptNodes = append(keptNodes, n)
-		}
-	}
-
-	if err := saveInstalledNodes(req.ID, keptNodes); err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
-		return
-	}
-
-	// 仅向本次选中的在线节点下发卸载指令
+	// 仅向本次选中的在线节点下发卸载指令，不再直接写入数据库
 	go func(extID string, targets []string) {
 		agentConnsMu.RLock()
 		defer agentConnsMu.RUnlock()
@@ -188,7 +205,8 @@ func ApiUninstallExtensionHandler(w http.ResponseWriter, r *http.Request) {
 		msg := RPCRequest{
 			JSONRPC: "2.0",
 			Method:  "extension.uninstall",
-			Params:  mustMarshal(map[string]string{"id": extID}),
+			Params:  mustMarshal(map[string]interface{}{"id": extID}),
+			ID:      time.Now().UnixNano(),
 		}
 
 		for _, nodeID := range targets {
