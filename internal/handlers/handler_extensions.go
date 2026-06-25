@@ -24,7 +24,7 @@ var availableExtensions = []ExtensionInfo{
 		Name:             "MTR 路由追踪",
 		Description:      "提供从探针节点到目标 IP 的全链路 MTR 路由追踪诊断能力。",
 		Version:          "v1.0.0",
-		DownloadURL:      "https://mirror.ghproxy.com/https://github.com/hhlli/float-mtr-plugin/releases/latest/download/float-mtr-plugin",
+		DownloadURL:      "https://github.com/hhlli/float-mtr-plugin/releases/latest/download/float-mtr-plugin",
 		RequirePrivilege: true,
 		InstalledNodes:   []string{},
 	},

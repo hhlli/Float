@@ -279,6 +279,12 @@ func WsAgentHandler(w http.ResponseWriter, r *http.Request) {
 		_, hasMethod := rawMsg["method"].(string)
 		_, hasID := rawMsg["id"]
 		if !hasMethod && hasID {
+			// 拦截并打印 Error 响应，防止静默失败
+			if errorRaw, hasErr := rawMsg["error"].(map[string]interface{}); hasErr {
+				logger.Log.Error("探针任务执行返回错误", zap.Any("error", errorRaw))
+				continue
+			}
+		
 			if resultRaw, ok := rawMsg["result"].(map[string]interface{}); ok {
 				// 1. 拦截安装/卸载响应 (状态闭环预留)
 				if action, isExt := resultRaw["action"].(string); isExt {

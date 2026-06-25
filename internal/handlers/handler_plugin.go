@@ -58,7 +58,8 @@ func ApiRunPluginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	timestamp := time.Now().Unix()
+	taskID := time.Now().UnixMilli()
+    nowSec := time.Now().Unix() // 仅用于记录真实时间
 	
 	// 记录初始参数以便前端展示
 	pendingMap := map[string]interface{}{
@@ -69,7 +70,7 @@ func ApiRunPluginHandler(w http.ResponseWriter, r *http.Request) {
 
 	_, errInsert := database.DB.Exec(
 		"INSERT OR REPLACE INTO plugin_results (node_id, ext_id, task_id, timestamp, status, result_json) VALUES (?, ?, ?, ?, 'pending', ?)",
-		req.NodeID, req.ExtID, timestamp, timestamp, string(pendingBytes),
+		req.NodeID, req.ExtID, taskID, nowSec, string(pendingBytes),
 	)
 	if errInsert != nil {
 		logger.Log.Error("写入 Plugin pending 行失败", zap.Error(errInsert))
@@ -77,15 +78,15 @@ func ApiRunPluginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	success := RequestAgentPlugin(timestamp, req.NodeID, req.ExtID, req.Args)
-	if !success {
-		database.DB.Exec("DELETE FROM plugin_results WHERE task_id = ?", timestamp)
+	success := RequestAgentPlugin(taskID, req.NodeID, req.ExtID, req.Args)
+    if !success {
+    database.DB.Exec("DELETE FROM plugin_results WHERE task_id = ?", taskID)
 		http.Error(w, "目标探针离线或未建立 WebSocket 连接", http.StatusServiceUnavailable)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(fmt.Sprintf(`{"status":"dispatched","task_id":%d}`, timestamp)))
+    w.Write([]byte(fmt.Sprintf(`{"status":"dispatched","task_id":%d}`, taskID)))
 }
 
 // ApiGetPluginResultHandler [API] 前端轮询获取插件执行结果
